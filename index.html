@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KML Section Viewer</title>
+  <style>
+    :root {
+      --panel-bg: rgba(255, 255, 255, 0.9);
+      --panel-border: rgba(15, 23, 42, 0.08);
+      --panel-text: #122033;
+      --panel-muted: #4a6078;
+      --button-bg: #1769e0;
+      --button-bg-hover: #0f54bb;
+      --button-text: #ffffff;
+      --error: #b42318;
+      --shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+      --radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #dfe7ef;
+      color: var(--panel-text);
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    .overlay {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      width: min(360px, calc(100vw - 32px));
+      padding: 16px 18px;
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      background: var(--panel-bg);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .overlay h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      line-height: 1.3;
+    }
+
+    .overlay p {
+      margin: 8px 0 0;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      color: var(--panel-muted);
+    }
+
+    .overlay p.error {
+      color: var(--error);
+      font-weight: 600;
+    }
+
+
+
+    @media (max-width: 640px) {
+      .overlay {
+        top: 12px;
+        left: 12px;
+        width: calc(100vw - 24px);
+        padding: 14px;
+      }
+
+      .overlay h1 {
+        font-size: 1.05rem;
+      }
+
+      .overlay p {
+        font-size: 0.9rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="overlay">
+    <h1 id="section-title">Section Viewer</h1>
+    <p id="section-status">Loading map...</p>
+  </div>
+  <div id="map" aria-label="Google Map"></div>
+
+  <script>
+    const FALLBACK_CENTER = { lat: 5.6037, lng: -0.1870 };
+    const FALLBACK_ZOOM = 11;
+    const CONFIG_ENDPOINT = "/api/config";
+
+    let map;
+    let activePolygon = null;
+    let runtimeConfig = null;
+
+    async function bootstrapApp() {
+      try {
+        runtimeConfig = await fetchRuntimeConfig();
+        await loadGoogleMapsScript(runtimeConfig.googleMapsApiKey);
+        initMap();
+      } catch (error) {
+        console.error("Application bootstrap failed:", error);
+        setHeaderState("Section not found", "Configuration could not be loaded.", true);
+      }
+    }
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
+        center: FALLBACK_CENTER,
+        zoom: FALLBACK_ZOOM,
+        mapTypeId: "roadmap",
+        streetViewControl: false,
+        fullscreenControl: true,
+        mapTypeControl: false
+      });
+
+      loadSectionFromUrl().catch(function(error) {
+        console.error("Unhandled map initialization error:", error);
+        setHeaderState("Section not found", "Unable to load the requested section.", true);
+      });
+    }
+
+    async function loadSectionFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const requestedZone = (params.get("zone") || "").trim();
+      const requestedSection = (params.get("section") || "").trim();
+
+      if (!requestedZone || !requestedSection) {
+        console.warn("Missing required 'zone' or 'section' query parameter.");
+        setHeaderState("Section not found", "Use a URL like ?zone=Zone%2013&section=1C.", true);
+        return;
+      }
+
+      const selectionLabel = buildSelectionLabel(requestedZone, requestedSection);
+      setHeaderState("Section: " + selectionLabel, "Loading polygon from KML...");
+
+      const xmlDoc = await fetchKmlDocument(runtimeConfig.kmlUrl);
+      const matchResult = resolvePlacemarkForZoneAndSection(xmlDoc, requestedZone, requestedSection);
+
+      if (!matchResult) {
+        console.warn("No matching Placemark was found for zone and section:", requestedZone, requestedSection);
+        setHeaderState("Section not found", "No exact section match was found inside the requested zone.", true);
+        return;
+      }
+
+      const matchedName = buildSelectionLabel(matchResult.zoneName, matchResult.sectionName);
+      const coordinatesText = extractOuterRingCoordinates(matchResult.placemarkNode);
+
+      if (!coordinatesText) {
+        console.warn("Matching Placemark did not contain polygon coordinates:", matchedName);
+        setHeaderState("Section not found", "The matching KML entry does not contain polygon coordinates.", true);
+        return;
+      }
+
+      const path = parseCoordinatesString(coordinatesText);
+
+      if (!path.length) {
+        console.warn("Polygon coordinates could not be parsed for section:", matchedName);
+        setHeaderState("Section not found", "Coordinates were present, but none could be parsed.", true);
+        return;
+      }
+
+      drawPolygon(path);
+      fitMapToPath(path);
+      setHeaderState("Section: " + matchedName, "Polygon loaded successfully.");
+      console.info("Loaded section:", matchedName, "with", path.length, "points.");
+    }
+
+    async function fetchRuntimeConfig() {
+      const response = await fetch(CONFIG_ENDPOINT, {
+        method: "GET",
+        headers: {
+          "Accept": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch runtime config. HTTP status: " + response.status);
+      }
+
+      const config = await response.json();
+
+      if (!config.googleMapsApiKey || !config.kmlUrl) {
+        throw new Error("Runtime config is missing required values.");
+      }
+
+      return config;
+    }
+
+    function loadGoogleMapsScript(apiKey) {
+      return new Promise(function(resolve, reject) {
+        const existingScript = document.querySelector("script[data-google-maps-loader='true']");
+
+        if (existingScript) {
+          resolve();
+          return;
+        }
+
+        window.__initGoogleMap = function() {
+          resolve();
+        };
+
+        const script = document.createElement("script");
+        script.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(apiKey) + "&callback=__initGoogleMap";
+        script.async = true;
+        script.defer = true;
+        script.dataset.googleMapsLoader = "true";
+        script.onerror = function() {
+          reject(new Error("Google Maps JavaScript API failed to load."));
+        };
+
+        document.head.appendChild(script);
+      });
+    }
+
+    async function fetchKmlDocument(url) {
+      console.info("Fetching KML from:", url);
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Accept": "application/vnd.google-earth.kml+xml, application/xml, text/xml"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch KML. HTTP status: " + response.status);
+      }
+
+      const xmlText = await response.text();
+      const xmlDoc = new DOMParser().parseFromString(xmlText, "application/xml");
+      const parserError = xmlDoc.getElementsByTagName("parsererror")[0];
+
+      if (parserError) {
+        throw new Error("Failed to parse KML XML.");
+      }
+
+      return xmlDoc;
+    }
+
+    function resolvePlacemarkForZoneAndSection(xmlDoc, zoneName, sectionName) {
+      const targetZoneName = normalizeName(zoneName);
+      const targetSectionName = normalizeName(sectionName);
+      const root = xmlDoc.documentElement;
+      let exactFolderMatch = null;
+      const stack = [root];
+
+      while (stack.length) {
+        const node = stack.pop();
+
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+          continue;
+        }
+
+        const localName = node.localName;
+
+        if (localName === "Folder") {
+          const folderName = normalizeName(getNodeName(node));
+          if (folderName === targetZoneName && !exactFolderMatch) {
+            exactFolderMatch = node;
+          }
+        }
+
+        for (let index = node.children.length - 1; index >= 0; index -= 1) {
+          stack.push(node.children[index]);
+        }
+      }
+
+      if (!exactFolderMatch) {
+        return null;
+      }
+
+      const descendantPlacemark = findPlacemarkByName(exactFolderMatch, targetSectionName);
+
+      if (descendantPlacemark) {
+        console.info("Matched zone and section:", getNodeName(exactFolderMatch), getNodeName(descendantPlacemark));
+        return {
+          zoneName: getNodeName(exactFolderMatch),
+          sectionName: getNodeName(descendantPlacemark),
+          placemarkNode: descendantPlacemark,
+          matchType: "zone-section"
+        };
+      }
+
+      return null;
+    }
+
+    function findPlacemarkByName(rootNode, sectionName) {
+      const stack = [rootNode];
+
+      while (stack.length) {
+        const node = stack.pop();
+
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+          continue;
+        }
+
+        if (
+          node !== rootNode &&
+          node.localName === "Placemark" &&
+          normalizeName(getNodeName(node)) === sectionName &&
+          hasPolygon(node)
+        ) {
+          return node;
+        }
+
+        for (let index = node.children.length - 1; index >= 0; index -= 1) {
+          stack.push(node.children[index]);
+        }
+      }
+
+      return null;
+    }
+
+    function hasPolygon(node) {
+      return Boolean(findFirstDescendantByLocalName(node, "Polygon"));
+    }
+
+    function extractOuterRingCoordinates(placemarkNode) {
+      const polygonNode = findFirstDescendantByLocalName(placemarkNode, "Polygon");
+
+      if (!polygonNode) {
+        return "";
+      }
+
+      const outerBoundary = findFirstDirectChildByLocalName(polygonNode, "outerBoundaryIs");
+      const searchRoot = outerBoundary || polygonNode;
+      const linearRing = findFirstDescendantByLocalName(searchRoot, "LinearRing");
+
+      if (!linearRing) {
+        return "";
+      }
+
+      const coordinatesNode = findFirstDescendantByLocalName(linearRing, "coordinates");
+      return coordinatesNode ? coordinatesNode.textContent.trim() : "";
+    }
+
+    function parseCoordinatesString(coordinatesText) {
+      return coordinatesText
+        .trim()
+        .split(/\s+/)
+        .map(function(tuple) {
+          const parts = tuple.split(",");
+
+          if (parts.length < 2) {
+            return null;
+          }
+
+          const lng = Number(parts[0]);
+          const lat = Number(parts[1]);
+
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            return null;
+          }
+
+          return { lat: lat, lng: lng };
+        })
+        .filter(Boolean);
+    }
+
+    function drawPolygon(path) {
+      if (activePolygon) {
+        activePolygon.setMap(null);
+      }
+
+      activePolygon = new google.maps.Polygon({
+        paths: path,
+        strokeColor: "#d62828",
+        strokeOpacity: 1,
+        strokeWeight: 2.5,
+        fillColor: "#d62828",
+        fillOpacity: 0.24,
+        clickable: false
+      });
+
+      activePolygon.setMap(map);
+    }
+
+    function fitMapToPath(path) {
+      if (!path.length) {
+        map.setCenter(FALLBACK_CENTER);
+        map.setZoom(FALLBACK_ZOOM);
+        return;
+      }
+
+      const bounds = new google.maps.LatLngBounds();
+
+      path.forEach(function(point) {
+        bounds.extend(point);
+      });
+
+      map.fitBounds(bounds);
+    }
+
+    function buildSelectionLabel(zoneName, sectionName) {
+      return normalizeName(zoneName) + " / " + normalizeName(sectionName);
+    }
+
+    function setHeaderState(titleText, statusText, isError) {
+      const title = document.getElementById("section-title");
+      const status = document.getElementById("section-status");
+
+      title.textContent = titleText;
+      status.textContent = statusText;
+      status.classList.toggle("error", Boolean(isError));
+    }
+
+    function getNodeName(node) {
+      const nameNode = findFirstDirectChildByLocalName(node, "name");
+      return nameNode ? nameNode.textContent.trim() : "";
+    }
+
+    function normalizeName(value) {
+      return String(value || "").trim();
+    }
+
+    function findFirstDirectChildByLocalName(node, name) {
+      for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        if (child.localName === name) {
+          return child;
+        }
+      }
+
+      return null;
+    }
+
+    function findFirstDescendantByLocalName(node, name) {
+      const stack = [node];
+
+      while (stack.length) {
+        const current = stack.pop();
+
+        if (!current || current.nodeType !== Node.ELEMENT_NODE) {
+          continue;
+        }
+
+        if (current !== node && current.localName === name) {
+          return current;
+        }
+
+        for (let index = current.children.length - 1; index >= 0; index -= 1) {
+          stack.push(current.children[index]);
+        }
+      }
+
+      return null;
+    }
+
+    document.addEventListener("DOMContentLoaded", bootstrapApp);
+  </script>
+</body>
+</html>
