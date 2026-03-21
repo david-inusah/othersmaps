@@ -72,6 +72,39 @@
       font-weight: 600;
     }
 
+    .view-toggle {
+      display: inline-flex;
+      gap: 6px;
+      margin-top: 14px;
+      padding: 6px;
+      border: 1px solid var(--panel-border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .view-toggle button {
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--panel-muted);
+      background: transparent;
+      cursor: pointer;
+      transition: background-color 160ms ease, color 160ms ease;
+    }
+
+    .view-toggle button:hover {
+      background: rgba(23, 105, 224, 0.1);
+      color: var(--panel-text);
+    }
+
+    .view-toggle button.active {
+      background: var(--button-bg);
+      color: var(--button-text);
+    }
+
 
 
     @media (max-width: 640px) {
@@ -96,6 +129,10 @@
   <div class="overlay">
     <h1 id="section-title">Section Viewer</h1>
     <p id="section-status">Loading map...</p>
+    <div class="view-toggle" role="group" aria-label="Map view selector">
+      <button id="roadmap-button" type="button" class="active" aria-pressed="true">Map</button>
+      <button id="hybrid-button" type="button" aria-pressed="false">Hybrid</button>
+    </div>
   </div>
   <div id="map" aria-label="Google Map"></div>
 
@@ -107,6 +144,7 @@
     let map;
     let activePolygon = null;
     let runtimeConfig = null;
+    let activeMapTypeId = "roadmap";
 
     async function bootstrapApp() {
       try {
@@ -128,6 +166,9 @@
         fullscreenControl: true,
         mapTypeControl: false
       });
+
+      bindMapTypeToggle();
+      updateMapTypeToggleState(activeMapTypeId);
 
       loadSectionFromUrl().catch(function(error) {
         console.error("Unhandled map initialization error:", error);
@@ -388,6 +429,43 @@
       });
 
       activePolygon.setMap(map);
+    }
+
+    function bindMapTypeToggle() {
+      const roadmapButton = document.getElementById("roadmap-button");
+      const hybridButton = document.getElementById("hybrid-button");
+
+      roadmapButton.addEventListener("click", function() {
+        setMapType("roadmap");
+      });
+
+      hybridButton.addEventListener("click", function() {
+        setMapType("hybrid");
+      });
+    }
+
+    function setMapType(mapTypeId) {
+      if (!map) {
+        activeMapTypeId = mapTypeId;
+        updateMapTypeToggleState(mapTypeId);
+        return;
+      }
+
+      activeMapTypeId = mapTypeId;
+      map.setMapTypeId(mapTypeId);
+      updateMapTypeToggleState(mapTypeId);
+    }
+
+    function updateMapTypeToggleState(mapTypeId) {
+      const roadmapButton = document.getElementById("roadmap-button");
+      const hybridButton = document.getElementById("hybrid-button");
+      const isHybrid = mapTypeId === "hybrid";
+
+      roadmapButton.classList.toggle("active", !isHybrid);
+      roadmapButton.setAttribute("aria-pressed", String(!isHybrid));
+
+      hybridButton.classList.toggle("active", isHybrid);
+      hybridButton.setAttribute("aria-pressed", String(isHybrid));
     }
 
     function fitMapToPath(path) {
