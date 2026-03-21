@@ -137,6 +137,13 @@
   <div id="map" aria-label="Google Map"></div>
 
   <script>
+    window.va = window.va || function() {
+      (window.vaq = window.vaq || []).push(arguments);
+    };
+  </script>
+  <script defer src="/_vercel/insights/script.js"></script>
+
+  <script>
     const FALLBACK_CENTER = { lat: 5.6037, lng: -0.1870 };
     const FALLBACK_ZOOM = 11;
     const CONFIG_ENDPOINT = "/api/config";
