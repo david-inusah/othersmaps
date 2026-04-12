@@ -8,7 +8,7 @@ const tagRegex = /<\/?([A-Za-z0-9:_-]+)([^>]*)>|([^<]+)/g
 
 const elementStack = []
 const folderStack = []
-let currentPlacemark = null
+let currentPlacemark =  null
 const rows = []
 
 function getCurrentZone() {
